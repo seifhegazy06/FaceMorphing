@@ -45,10 +45,14 @@ def extract_landmarks(image_path, output_json="target_landmarks.json", visualize
             "points": points
         }
 
-        with open(output_json, "w") as f:
+        # Create TargetLandmarks folder if it doesn't exist
+        os.makedirs("TargetLandmarks", exist_ok=True)
+        output_path = os.path.join("TargetLandmarks", output_json)
+        
+        with open(output_path, "w") as f:
             json.dump(data, f, indent=2)
 
-        print(f"✅ Saved landmarks to {output_json}")
+        print(f"✅ Saved landmarks to {output_path}")
 
         # Optional visualization
         if visualize:
