@@ -145,7 +145,7 @@ cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
 
-face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=False,
+face_mesh = mp_face_mesh.FaceMesh(max_num_faces=5, refine_landmarks=False,
                                   min_detection_confidence=0.5,
                                   min_tracking_confidence=0.5)
 
@@ -223,61 +223,58 @@ while True:
     display = frame.copy()
 
     if results.multi_face_landmarks:
+        # Process each detected face
+        for face_lms in results.multi_face_landmarks:
 
-        face_lms = results.multi_face_landmarks[0]
+            src_pts = []
+            for lm in face_lms.landmark:
+                src_pts.append([int(lm.x * FRAME_W), int(lm.y * FRAME_H)])
+            src_pts = np.array(src_pts, dtype=np.int32)
 
-        src_pts = []
-        for lm in face_lms.landmark:
-            src_pts.append([int(lm.x * FRAME_W), int(lm.y * FRAME_H)])
-        src_pts = np.array(src_pts, dtype=np.int32)
+            target_img = active_target["img"]
+            target_pts = active_target["pts"]
 
-        target_img = active_target["img"]
-        target_pts = active_target["pts"]
+            warped_target = np.zeros_like(frame)
 
-        warped_target = np.zeros_like(frame)
+            for tri_idx in triangles:
+                t_tgt = target_pts[tri_idx]
+                t_src = src_pts[tri_idx]
+                warp_triangle(target_img, warped_target, t_tgt, t_src)
 
-        for tri_idx in triangles:
-            t_tgt = target_pts[tri_idx]
-            t_src = src_pts[tri_idx]
-            warp_triangle(target_img, warped_target, t_tgt, t_src)
-
-        # Create face mask to only blend face area
-        face_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
-        hull = cv2.convexHull(src_pts)
-        cv2.fillConvexPoly(face_mask, hull, 255)
-        
-        # Create mouth mask using correct MediaPipe Face Mesh indices
-        # Lips outer: 61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291
-        # Lips inner: 78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308
-        mouth_indices = [
-            61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291,  # Upper outer lip
-            61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291,      # Lower outer lip
-            78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308,     # Upper inner lip
-            78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308      # Lower inner lip
-        ]
-        
-        if len(src_pts) > max(mouth_indices):  # Ensure landmarks exist
-            mouth_pts = src_pts[mouth_indices]
-            mouth_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
-            cv2.fillConvexPoly(mouth_mask, cv2.convexHull(mouth_pts), 255)
+            # Create face mask to only blend face area
+            face_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
+            hull = cv2.convexHull(src_pts)
+            cv2.fillConvexPoly(face_mask, hull, 255)
             
-            # Expand mouth mask slightly to ensure full coverage
-            kernel = np.ones((5,5), np.uint8)
-            mouth_mask = cv2.dilate(mouth_mask, kernel, iterations=2)
+            # Create teeth/mouth interior mask - always exclude to show real teeth
+            # Inner mouth indices for teeth area
+            teeth_indices = [
+                78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308,  # Inner mouth contour
+                95, 88, 178, 87, 14, 317, 402, 318, 324, 308  # Additional inner area
+            ]
             
-            # Remove mouth area from face mask (so original mouth shows through)
-            face_mask = cv2.subtract(face_mask, mouth_mask)
-        
-        # Blur mask edges for smooth blending
-        face_mask = cv2.GaussianBlur(face_mask, (21, 21), 11)
-        face_mask_3ch = cv2.merge([face_mask, face_mask, face_mask]) / 255.0
-        
-        # Alpha blend
-        alpha = cv2.getTrackbarPos("alpha", WINDOW_NAME) / 100
-        face_blend = cv2.addWeighted(frame, 1 - alpha, warped_target, alpha, 0)
-        
-        # Combine: blended face in mask area, original frame (including mouth) elsewhere
-        display = (face_blend * face_mask_3ch + frame * (1 - face_mask_3ch)).astype(np.uint8)
+            if len(src_pts) > max(teeth_indices):
+                teeth_pts = src_pts[teeth_indices]
+                teeth_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
+                cv2.fillConvexPoly(teeth_mask, cv2.convexHull(teeth_pts), 255)
+                
+                # Expand teeth mask to ensure full teeth coverage
+                kernel = np.ones((3,3), np.uint8)
+                teeth_mask = cv2.dilate(teeth_mask, kernel, iterations=1)
+                
+                # Remove teeth area from face mask (so real teeth always show)
+                face_mask = cv2.subtract(face_mask, teeth_mask)
+            
+            # Blur mask edges for smooth blending
+            face_mask = cv2.GaussianBlur(face_mask, (21, 21), 11)
+            face_mask_3ch = cv2.merge([face_mask, face_mask, face_mask]) / 255.0
+            
+            # Alpha blend
+            alpha = cv2.getTrackbarPos("alpha", WINDOW_NAME) / 100
+            face_blend = cv2.addWeighted(display, 1 - alpha, warped_target, alpha, 0)
+            
+            # Combine: blended face in mask area, original frame (including mouth) elsewhere
+            display = (face_blend * face_mask_3ch + display * (1 - face_mask_3ch)).astype(np.uint8)
 
     # Write frame BEFORE adding UI elements (so they don't appear in the video)
     if is_recording and video_writer is not None:

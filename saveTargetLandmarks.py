@@ -45,9 +45,10 @@ def extract_landmarks(image_path, output_json="target_landmarks.json", visualize
             "points": points
         }
 
-        # Create TargetLandmarks folder if it doesn't exist
-        os.makedirs("TargetLandmarks", exist_ok=True)
-        output_path = os.path.join("TargetLandmarks", output_json)
+        # Save to same folder as image with same base name
+        image_dir = os.path.dirname(image_path)
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        output_path = os.path.join(image_dir, f"{base_name}.json")
         
         with open(output_path, "w") as f:
             json.dump(data, f, indent=2)
@@ -91,9 +92,8 @@ if __name__ == "__main__":
             
             for img_file in image_files:
                 img_path = os.path.join(image_folder, img_file)
-                output_name = f"{os.path.splitext(img_file)[0]}_landmarks.json"
                 
                 print(f"\n📸 Processing: {img_file}")
-                extract_landmarks(img_path, output_name, visualize=False)
+                extract_landmarks(img_path, visualize=False)
             
             print("\n✅ All images processed!")
