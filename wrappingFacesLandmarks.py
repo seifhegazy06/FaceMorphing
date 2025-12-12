@@ -108,7 +108,7 @@ for f in target_files:
         continue
 
     img = cv2.imread(f, cv2.IMREAD_UNCHANGED)
-    
+     
     # Convert RGBA to BGR if needed
     if img.shape[2] == 4:
         img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
@@ -253,6 +253,19 @@ while True:
                 95, 88, 178, 87, 14, 317, 402, 318, 324, 308  # Additional inner area
             ]
             
+            # Eye indices for both eyes
+            left_eye_indices = [
+                # Left eye contour
+                33, 7, 163, 144, 145, 153, 154, 155, 133,
+                173, 157, 158, 159, 160, 161, 246
+            ]
+            
+            right_eye_indices = [
+                # Right eye contour
+                362, 382, 381, 380, 374, 373, 390, 249,
+                263, 466, 388, 387, 386, 385, 384, 398
+            ]
+            
             if len(src_pts) > max(teeth_indices):
                 teeth_pts = src_pts[teeth_indices]
                 teeth_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
@@ -265,6 +278,28 @@ while True:
                 # Remove teeth area from face mask (so real teeth always show)
                 face_mask = cv2.subtract(face_mask, teeth_mask)
             
+            # Exclude eyes area to show real eyes
+            if len(src_pts) > max(left_eye_indices + right_eye_indices):
+                # Left eye mask
+                left_eye_pts = src_pts[left_eye_indices]
+                left_eye_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
+                cv2.fillConvexPoly(left_eye_mask, cv2.convexHull(left_eye_pts), 255)
+                
+                # Right eye mask
+                right_eye_pts = src_pts[right_eye_indices]
+                right_eye_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
+                cv2.fillConvexPoly(right_eye_mask, cv2.convexHull(right_eye_pts), 255)
+                
+                # Combine eye masks
+                eyes_mask = cv2.bitwise_or(left_eye_mask, right_eye_mask)
+                
+                # Expand eyes mask to ensure full coverage
+                kernel = np.ones((5,5), np.uint8)
+                eyes_mask = cv2.dilate(eyes_mask, kernel, iterations=2)
+                
+                # Remove eyes area from face mask (so real eyes always show)
+                face_mask = cv2.subtract(face_mask, eyes_mask)
+            
             # Blur mask edges for smooth blending
             face_mask = cv2.GaussianBlur(face_mask, (21, 21), 11)
             face_mask_3ch = cv2.merge([face_mask, face_mask, face_mask]) / 255.0
@@ -275,6 +310,29 @@ while True:
             
             # Combine: blended face in mask area, original frame (including mouth) elsewhere
             display = (face_blend * face_mask_3ch + display * (1 - face_mask_3ch)).astype(np.uint8)
+            
+            # Force original eyes and mouth to show (no blending whatsoever)
+            if len(src_pts) > max(left_eye_indices + right_eye_indices):
+                # Create sharp (non-blurred) masks for eyes and mouth
+                final_exclusion_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
+                
+                # Add eyes
+                cv2.fillConvexPoly(final_exclusion_mask, cv2.convexHull(left_eye_pts), 255)
+                cv2.fillConvexPoly(final_exclusion_mask, cv2.convexHull(right_eye_pts), 255)
+                
+                # Add mouth if available
+                if len(src_pts) > max(teeth_indices):
+                    cv2.fillConvexPoly(final_exclusion_mask, cv2.convexHull(teeth_pts), 255)
+                
+                # Expand to ensure full coverage
+                kernel = np.ones((5,5), np.uint8)
+                final_exclusion_mask = cv2.dilate(final_exclusion_mask, kernel, iterations=2)
+                
+                # Convert to 3 channels
+                final_exclusion_mask_3ch = cv2.merge([final_exclusion_mask, final_exclusion_mask, final_exclusion_mask]) / 255.0
+                
+                # Replace with original frame in these areas (100% original, 0% morphed)
+                display = (frame * final_exclusion_mask_3ch + display * (1 - final_exclusion_mask_3ch)).astype(np.uint8)
 
     # Write frame BEFORE adding UI elements (so they don't appear in the video)
     if is_recording and video_writer is not None:
