@@ -10,15 +10,67 @@ import pyaudio
 import wave
 import threading
 from moviepy import VideoFileClip, AudioFileClip
+import ctypes
 
 # ============================================================
 #                    CONFIGURATION
 # ============================================================
-FRAME_W, FRAME_H = 640, 480
 TARGET_FOLDER = "Targets"
 WINDOW_NAME = "Real-time Morph"
 
+# Get screen resolution and set default to 80% of screen size
+user32 = ctypes.windll.user32
+SCREEN_WIDTH = user32.GetSystemMetrics(0)
+SCREEN_HEIGHT = user32.GetSystemMetrics(1)
+DEFAULT_WIDTH = int(SCREEN_WIDTH)
+DEFAULT_HEIGHT = int(SCREEN_HEIGHT)
+
 mp_face_mesh = mp.solutions.face_mesh
+
+# Modern UI Colors
+UI_BG_COLOR = (30, 30, 35)  # Dark background
+UI_ACCENT_COLOR = (100, 200, 255)  # Cyan accent
+UI_HOVER_COLOR = (60, 60, 70)  # Hover state
+UI_TEXT_COLOR = (240, 240, 245)  # Light text
+UI_BORDER_COLOR = (80, 80, 90)  # Subtle borders
+UI_SELECTED_COLOR = (255, 180, 80)  # Orange for selected items
+UI_REC_COLOR = (255, 70, 70)  # Red for recording
+
+
+# ============================================================
+#              MODERN UI HELPER FUNCTIONS
+# ============================================================
+def draw_rounded_rect(img, pt1, pt2, color, thickness=-1, radius=10):
+    """Draw a rectangle with rounded corners"""
+    x1, y1 = pt1
+    x2, y2 = pt2
+    
+    # Draw filled rectangles
+    if thickness == -1:
+        # Main rectangles
+        cv2.rectangle(img, (x1 + radius, y1), (x2 - radius, y2), color, -1)
+        cv2.rectangle(img, (x1, y1 + radius), (x2, y2 - radius), color, -1)
+        
+        # Corner circles
+        cv2.circle(img, (x1 + radius, y1 + radius), radius, color, -1)
+        cv2.circle(img, (x2 - radius, y1 + radius), radius, color, -1)
+        cv2.circle(img, (x1 + radius, y2 - radius), radius, color, -1)
+        cv2.circle(img, (x2 - radius, y2 - radius), radius, color, -1)
+    else:
+        # Draw outline with rounded corners
+        cv2.line(img, (x1 + radius, y1), (x2 - radius, y1), color, thickness, cv2.LINE_AA)
+        cv2.line(img, (x1 + radius, y2), (x2 - radius, y2), color, thickness, cv2.LINE_AA)
+        cv2.line(img, (x1, y1 + radius), (x1, y2 - radius), color, thickness, cv2.LINE_AA)
+        cv2.line(img, (x2, y1 + radius), (x2, y2 - radius), color, thickness, cv2.LINE_AA)
+        
+        cv2.ellipse(img, (x1 + radius, y1 + radius), (radius, radius), 180, 0, 90, color, thickness, cv2.LINE_AA)
+        cv2.ellipse(img, (x2 - radius, y1 + radius), (radius, radius), 270, 0, 90, color, thickness, cv2.LINE_AA)
+        cv2.ellipse(img, (x1 + radius, y2 - radius), (radius, radius), 90, 0, 90, color, thickness, cv2.LINE_AA)
+        cv2.ellipse(img, (x2 - radius, y2 - radius), (radius, radius), 0, 0, 90, color, thickness, cv2.LINE_AA)
+
+def draw_modern_text(img, text, pos, scale=0.5, color=(255, 255, 255), thickness=1):
+    """Draw text with anti-aliasing"""
+    cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
 
 
 # ============================================================
@@ -100,10 +152,21 @@ def warp_triangle(img_src, img_dst, t_src, t_dst):
 target_files = sorted(glob.glob(os.path.join(TARGET_FOLDER, "**", "*.png"), recursive=True))
 targets = []
 
+# Get all categories (subdirectories)
+categories = ["All"]
+for entry in os.listdir(TARGET_FOLDER):
+    entry_path = os.path.join(TARGET_FOLDER, entry)
+    if os.path.isdir(entry_path):
+        categories.append(entry)
+
 for f in target_files:
     name = os.path.splitext(os.path.basename(f))[0]
     # JSON should be in the same directory as the image
     json_path = os.path.join(os.path.dirname(f), name + ".json")
+    
+    # Get category from parent directory
+    parent_dir = os.path.basename(os.path.dirname(f))
+    category = parent_dir if parent_dir != os.path.basename(TARGET_FOLDER) else "Uncategorized"
 
     if not os.path.exists(json_path):
         print(f"WARNING: JSON for {name} not found!")
@@ -124,16 +187,24 @@ for f in target_files:
         "name": name,
         "img": img,
         "pts": pts,
-        "icon": icon
+        "icon": icon,
+        "category": category
     })
 
 if len(targets) == 0:
     raise Exception("No targets found in folder.")
 
 print("Loaded targets:", [t["name"] for t in targets])
+print("Categories:", categories)
 
 active_target_index = 0
 active_target = targets[active_target_index]
+selected_category = "All"
+filtered_targets = targets.copy()
+dropdown_open = False
+icon_scroll_offset = 0  # For sliding icon bar
+alpha_value = 50  # Alpha blending value (0-100)
+slider_dragging = False  # Track if slider is being dragged
 
 # Build Delaunay triangulation ONCE using first target
 tri = Delaunay(active_target["pts"])
@@ -144,37 +215,136 @@ triangles = tri.simplices
 #                 OPEN WEBCAM + MESH
 # ============================================================
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
 face_mesh = mp_face_mesh.FaceMesh(max_num_faces=5, refine_landmarks=False,
                                   min_detection_confidence=0.5,
                                   min_tracking_confidence=0.5)
+
+# Create resizable window in fullscreen mode
+cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
 
 # ============================================================
 #                  MOUSE CLICK HANDLER
 # ============================================================
 def mouse_event(event, x, y, flags, param):
-    global active_target_index, active_target
+    global active_target_index, active_target, dropdown_open, selected_category, filtered_targets, icon_scroll_offset, alpha_value, slider_dragging
 
     if event == cv2.EVENT_LBUTTONDOWN:
-        bar_y = FRAME_H - 90
+        # Get current window dimensions for responsive calculations
+        window_rect = cv2.getWindowImageRect(WINDOW_NAME)
+        curr_w = window_rect[2] if window_rect[2] > 0 else DEFAULT_WIDTH
+        curr_h = window_rect[3] if window_rect[3] > 0 else DEFAULT_HEIGHT
+        
+        # Calculate slider bounds dynamically
+        slider_start_x = int(curr_w * 0.31)
+        slider_end_x = int(curr_w * 0.94)
+        top_panel_height = int(curr_h * 0.125)
+        slider_y_top = int(top_panel_height * 0.25)
+        slider_y_bottom = int(top_panel_height * 0.75)
+        slider_track_start = slider_start_x + int(curr_w * 0.016)
+        slider_track_end = slider_end_x - int(curr_w * 0.016)
+        
+        # Check custom alpha slider
+        if slider_start_x <= x <= slider_end_x and slider_y_top <= y <= slider_y_bottom:
+            slider_dragging = True
+            # Calculate alpha from click position
+            slider_track_width = slider_track_end - slider_track_start
+            alpha_value = int(((x - slider_track_start) / slider_track_width) * 100)
+            alpha_value = max(0, min(100, alpha_value))
+            return
+        # Check dropdown toggle button (top panel)
+        if 10 <= x <= 180 and 10 <= y <= 45:
+            dropdown_open = not dropdown_open
+            return
+        
+        # Check dropdown menu items (if open)
+        if dropdown_open and 10 <= x <= 180:
+            for i, cat in enumerate(categories):
+                y_start = 55 + i * 35
+                y_end = y_start + 30
+                if y_start <= y <= y_end:
+                    selected_category = cat
+                    dropdown_open = False
+                    
+                    # Filter targets based on selected category
+                    if selected_category == "All":
+                        filtered_targets = targets.copy()
+                    else:
+                        filtered_targets = [t for t in targets if t["category"] == selected_category]
+                    
+                    # Reset active target and scroll to first
+                    if len(filtered_targets) > 0:
+                        active_target_index = 0
+                        active_target = filtered_targets[active_target_index]
+                        icon_scroll_offset = 0
+                        print(f"Category: {selected_category}, Targets: {[t['name'] for t in filtered_targets]}")
+                    return
+        
+        # Check left/right scroll arrows for icon bar
+        icon_bar_height = int(curr_h * 0.1875)
+        bar_y = curr_h - icon_bar_height
+        icon_size = int(min(curr_h * 0.146, curr_w * 0.109))
+        icon_spacing = int(icon_size * 1.14)
+        arrow_size = int(curr_w * 0.055)
+        available_width = curr_w - (arrow_size * 2) - 20
+        max_visible_icons = max(1, int(available_width / icon_spacing))
+        
+        if bar_y <= y <= curr_h:
+            arrow_y_center = bar_y + icon_bar_height // 2
+            # Left arrow
+            if 5 <= x <= 5 + arrow_size and icon_scroll_offset > 0:
+                icon_scroll_offset -= 1
+                return
+            # Right arrow
+            max_scroll = max(0, len(filtered_targets) - max_visible_icons)
+            if curr_w - 5 - arrow_size <= x <= curr_w - 5 and icon_scroll_offset < max_scroll:
+                icon_scroll_offset += 1
+                return
+        
+        # Check icon bar
         if y >= bar_y:
-            icon_w = 80
-            for i in range(len(targets)):
-                x0 = 20 + i * icon_w
-                x1 = x0 + 70
-                if x0 <= x <= x1:
+            visible_start = icon_scroll_offset
+            visible_end = min(visible_start + max_visible_icons, len(filtered_targets))
+            x0 = arrow_size + 15
+            
+            for i in range(visible_start, visible_end):
+                display_index = i - visible_start
+                icon_x = x0 + display_index * icon_spacing
+                icon_x1 = icon_x
+                icon_x2 = icon_x + icon_size
+                if icon_x1 <= x <= icon_x2:
                     active_target_index = i
-                    active_target = targets[i]
+                    active_target = filtered_targets[i]
                     print("Switched to:", active_target["name"])
                     return
+        
+        # Click outside dropdown closes it
+        if dropdown_open:
+            dropdown_open = False
+    
+    elif event == cv2.EVENT_MOUSEMOVE:
+        # Update slider while dragging
+        if slider_dragging:
+            window_rect = cv2.getWindowImageRect(WINDOW_NAME)
+            curr_w = window_rect[2] if window_rect[2] > 0 else DEFAULT_WIDTH
+            slider_start_x = int(curr_w * 0.31)
+            slider_end_x = int(curr_w * 0.94)
+            slider_track_start = slider_start_x + int(curr_w * 0.016)
+            slider_track_end = slider_end_x - int(curr_w * 0.016)
+            
+            if slider_start_x <= x <= slider_end_x:
+                slider_track_width = slider_track_end - slider_track_start
+                alpha_value = int(((x - slider_track_start) / slider_track_width) * 100)
+                alpha_value = max(0, min(100, alpha_value))
+    
+    elif event == cv2.EVENT_LBUTTONUP:
+        slider_dragging = False
 
-cv2.namedWindow(WINDOW_NAME)
 cv2.setMouseCallback(WINDOW_NAME, mouse_event)
-
-cv2.createTrackbar("alpha", WINDOW_NAME, 50, 100, lambda x: None)
 
 # Video recording variables
 is_recording = False
@@ -217,6 +387,11 @@ while True:
     ret, frame = cap.read()
     if not ret:
         break
+
+    # Get current window size dynamically
+    window_rect = cv2.getWindowImageRect(WINDOW_NAME)
+    FRAME_W = window_rect[2] if window_rect[2] > 0 else DEFAULT_WIDTH
+    FRAME_H = window_rect[3] if window_rect[3] > 0 else DEFAULT_HEIGHT
 
     frame = cv2.resize(frame, (FRAME_W, FRAME_H))
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -307,7 +482,7 @@ while True:
             face_mask_3ch = cv2.merge([face_mask, face_mask, face_mask]) / 255.0
             
             # Alpha blend
-            alpha = cv2.getTrackbarPos("alpha", WINDOW_NAME) / 100
+            alpha = alpha_value / 100
             face_blend = cv2.addWeighted(display, 1 - alpha, warped_target, alpha, 0)
             
             # Combine: blended face in mask area, original frame (including mouth) elsewhere
@@ -340,34 +515,198 @@ while True:
     if is_recording and video_writer is not None:
         video_writer.write(display)
     
-    # ------------ DRAW ICON BAR (after recording frame) ------------
-    icon_y = FRAME_H - 90
-    x0 = 20
-    for i, t in enumerate(targets):
-        center_x = x0 + 35  # Center of 70px icon
-        center_y = icon_y + 35
+    # ------------ DRAW DARK MODE TOP PANEL (after recording frame) ------------
+    # Calculate responsive dimensions
+    top_panel_height = int(FRAME_H * 0.125)  # 12.5% of height
+    
+    # Draw dark background for entire top area
+    overlay = display.copy()
+    cv2.rectangle(overlay, (0, 0), (FRAME_W, top_panel_height), (15, 15, 20), -1)
+    cv2.addWeighted(overlay, 0.95, display, 0.05, 0, display)
+    
+    # ------------ DRAW CUSTOM ALPHA SLIDER ------------
+    # Calculate slider dimensions based on window size
+    slider_start_x = int(FRAME_W * 0.31)
+    slider_end_x = int(FRAME_W * 0.94)
+    slider_y_top = int(top_panel_height * 0.25)
+    slider_y_bottom = int(top_panel_height * 0.75)
+    slider_track_height = int((slider_y_bottom - slider_y_top) * 0.33)
+    
+    # Slider background
+    draw_rounded_rect(display, (slider_start_x, slider_y_top), (slider_end_x, slider_y_bottom), UI_BG_COLOR, -1, 8)
+    
+    # Slider track
+    track_y_center = (slider_y_top + slider_y_bottom) // 2
+    track_y_top = track_y_center - slider_track_height // 2
+    track_y_bottom = track_y_center + slider_track_height // 2
+    slider_track_start = slider_start_x + int(FRAME_W * 0.016)
+    slider_track_end = slider_end_x - int(FRAME_W * 0.016)
+    
+    draw_rounded_rect(display, (slider_track_start, track_y_top), (slider_track_end, track_y_bottom), UI_BORDER_COLOR, -1, 5)
+    
+    # Slider filled portion (shows current value)
+    slider_track_width = slider_track_end - slider_track_start
+    slider_fill_end = slider_track_start + int((alpha_value / 100) * slider_track_width)
+    if slider_fill_end > slider_track_start:
+        draw_rounded_rect(display, (slider_track_start, track_y_top), (slider_fill_end, track_y_bottom), UI_ACCENT_COLOR, -1, 5)
+    
+    # Slider handle (knob)
+    handle_x = slider_track_start + int((alpha_value / 100) * slider_track_width)
+    handle_radius = int(FRAME_H * 0.021)
+    cv2.circle(display, (handle_x, track_y_center), handle_radius, UI_ACCENT_COLOR, -1, cv2.LINE_AA)
+    cv2.circle(display, (handle_x, track_y_center), int(handle_radius * 0.8), UI_BG_COLOR, -1, cv2.LINE_AA)
+    cv2.circle(display, (handle_x, track_y_center), handle_radius, UI_ACCENT_COLOR, 2, cv2.LINE_AA)
+    
+    # Slider label
+    label_scale = max(0.3, min(0.5, FRAME_W / 1280))
+    draw_modern_text(display, f"Blend: {alpha_value}%", (slider_track_start + 5, slider_y_bottom + int(FRAME_H * 0.013)), label_scale, UI_TEXT_COLOR, 1)
+    
+    # ------------ DRAW MODERN DROPDOWN MENU (after recording frame) ------------
+    # Draw dropdown button with modern style
+    draw_rounded_rect(display, (10, 10), (180, 45), UI_BG_COLOR, -1, 8)
+    draw_rounded_rect(display, (10, 10), (180, 45), UI_ACCENT_COLOR, 2, 8)
+    
+    # Category text
+    draw_modern_text(display, selected_category, (20, 30), 0.55, UI_TEXT_COLOR, 1)
+    
+    # Draw dropdown arrow with better style
+    arrow_x = 160
+    arrow_y = 24 if not dropdown_open else 27
+    pts = np.array([[arrow_x - 5, arrow_y - 3], [arrow_x, arrow_y + 2], [arrow_x + 5, arrow_y - 3]], np.int32)
+    cv2.fillPoly(display, [pts], UI_ACCENT_COLOR, cv2.LINE_AA)
+    
+    # Draw dropdown menu (if open) with modern style
+    if dropdown_open:
+        menu_height = len(categories) * 35 + 10
+        # Draw shadow
+        shadow_overlay = display.copy()
+        draw_rounded_rect(shadow_overlay, (13, 53), (183, 53 + menu_height), (0, 0, 0), -1, 8)
+        cv2.addWeighted(shadow_overlay, 0.3, display, 0.7, 0, display)
         
-        # Draw selection circle
+        # Draw menu background
+        draw_rounded_rect(display, (10, 50), (180, 50 + menu_height), UI_BG_COLOR, -1, 8)
+        draw_rounded_rect(display, (10, 50), (180, 50 + menu_height), UI_BORDER_COLOR, 1, 8)
+        
+        for i, cat in enumerate(categories):
+            y_pos = 55 + i * 35
+            # Highlight selected or hovered category
+            if cat == selected_category:
+                draw_rounded_rect(display, (15, y_pos), (175, y_pos + 30), UI_ACCENT_COLOR, -1, 6)
+                text_color = (20, 20, 30)
+            else:
+                text_color = UI_TEXT_COLOR
+            
+            draw_modern_text(display, cat, (25, y_pos + 20), 0.5, text_color, 1)
+    
+    # ------------ DRAW MODERN ICON BAR WITH SLIDING (after recording frame) ------------
+    # Calculate responsive icon bar dimensions
+    icon_bar_height = int(FRAME_H * 0.1875)  # 18.75% of height
+    icon_y = FRAME_H - icon_bar_height
+    icon_size = int(min(FRAME_H * 0.146, FRAME_W * 0.109))  # Scale icons based on window size
+    icon_spacing = int(icon_size * 1.14)
+    arrow_size = int(FRAME_W * 0.055)
+    
+    # Draw semi-transparent background bar
+    overlay = display.copy()
+    draw_rounded_rect(overlay, (0, icon_y - 5), (FRAME_W, FRAME_H), (20, 20, 25), -1, 10)
+    cv2.addWeighted(overlay, 0.85, display, 0.15, 0, display)
+    
+    # Calculate how many icons can fit
+    available_width = FRAME_W - (arrow_size * 2) - 20
+    max_visible_icons = max(1, int(available_width / icon_spacing))
+    
+    # Draw modern left arrow (if not at start)
+    if icon_scroll_offset > 0:
+        arrow_y_center = icon_y + icon_bar_height // 2
+        draw_rounded_rect(display, (5, arrow_y_center - arrow_size//2), (5 + arrow_size, arrow_y_center + arrow_size//2), UI_BG_COLOR, -1, 8)
+        draw_rounded_rect(display, (5, arrow_y_center - arrow_size//2), (5 + arrow_size, arrow_y_center + arrow_size//2), UI_ACCENT_COLOR, 2, 8)
+        # Draw left chevron
+        arrow_offset = int(arrow_size * 0.25)
+        pts = np.array([[5 + arrow_size - arrow_offset, arrow_y_center], [5 + arrow_offset, arrow_y_center], [5 + arrow_offset + 4, arrow_y_center - 7]], np.int32)
+        cv2.fillPoly(display, [pts], UI_ACCENT_COLOR, cv2.LINE_AA)
+        pts = np.array([[5 + arrow_size - arrow_offset, arrow_y_center], [5 + arrow_offset, arrow_y_center], [5 + arrow_offset + 4, arrow_y_center + 7]], np.int32)
+        cv2.fillPoly(display, [pts], UI_ACCENT_COLOR, cv2.LINE_AA)
+    
+    # Draw modern right arrow (if more icons to show)
+    max_scroll = max(0, len(filtered_targets) - max_visible_icons)
+    if icon_scroll_offset < max_scroll:
+        arrow_y_center = icon_y + icon_bar_height // 2
+        draw_rounded_rect(display, (FRAME_W - 5 - arrow_size, arrow_y_center - arrow_size//2), (FRAME_W - 5, arrow_y_center + arrow_size//2), UI_BG_COLOR, -1, 8)
+        draw_rounded_rect(display, (FRAME_W - 5 - arrow_size, arrow_y_center - arrow_size//2), (FRAME_W - 5, arrow_y_center + arrow_size//2), UI_ACCENT_COLOR, 2, 8)
+        # Draw right chevron
+        arrow_offset = int(arrow_size * 0.25)
+        pts = np.array([[FRAME_W - 5 - arrow_size + arrow_offset, arrow_y_center], [FRAME_W - 5 - arrow_offset, arrow_y_center], [FRAME_W - 5 - arrow_offset - 4, arrow_y_center - 7]], np.int32)
+        cv2.fillPoly(display, [pts], UI_ACCENT_COLOR, cv2.LINE_AA)
+        pts = np.array([[FRAME_W - 5 - arrow_size + arrow_offset, arrow_y_center], [FRAME_W - 5 - arrow_offset, arrow_y_center], [FRAME_W - 5 - arrow_offset - 4, arrow_y_center + 7]], np.int32)
+        cv2.fillPoly(display, [pts], UI_ACCENT_COLOR, cv2.LINE_AA)
+    
+    # Draw visible icons with modern style
+    visible_start = icon_scroll_offset
+    visible_end = min(visible_start + max_visible_icons, len(filtered_targets))
+    x0 = arrow_size + 15
+    
+    for i in range(visible_start, visible_end):
+        t = filtered_targets[i]
+        
+        center_x = x0 + icon_size // 2
+        center_y = icon_y + icon_bar_height // 2
+        
+        # Draw selection ring with glow effect
         if i == active_target_index:
-            cv2.circle(display, (center_x, center_y), 38, (0, 255, 255), 3)
+            # Outer glow
+            cv2.circle(display, (center_x, center_y), int(icon_size * 0.57), UI_SELECTED_COLOR, 2, cv2.LINE_AA)
+            cv2.circle(display, (center_x, center_y), int(icon_size * 0.54), UI_SELECTED_COLOR, 1, cv2.LINE_AA)
+        else:
+            # Subtle border for unselected
+            cv2.circle(display, (center_x, center_y), int(icon_size * 0.53), UI_BORDER_COLOR, 1, cv2.LINE_AA)
         
         # Create circular mask for icon
         icon_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
-        cv2.circle(icon_mask, (center_x, center_y), 35, 255, -1)
+        cv2.circle(icon_mask, (center_x, center_y), int(icon_size * 0.5), 255, -1)
         
         # Apply icon with circular mask
-        icon_region = display[icon_y:icon_y+70, x0:x0+70]
-        icon_mask_region = icon_mask[icon_y:icon_y+70, x0:x0+70]
-        icon_mask_3ch = cv2.merge([icon_mask_region, icon_mask_region, icon_mask_region]) / 255.0
+        icon_y1 = max(0, center_y - icon_size // 2)
+        icon_y2 = min(FRAME_H, center_y + icon_size // 2)
+        icon_x1 = max(0, x0)
+        icon_x2 = min(FRAME_W, x0 + icon_size)
         
-        icon_region[:] = (t["icon"] * icon_mask_3ch + icon_region * (1 - icon_mask_3ch)).astype(np.uint8)
+        if icon_y2 > icon_y1 and icon_x2 > icon_x1:
+            icon_region = display[icon_y1:icon_y2, icon_x1:icon_x2]
+            icon_mask_region = icon_mask[icon_y1:icon_y2, icon_x1:icon_x2]
+            icon_mask_3ch = cv2.merge([icon_mask_region, icon_mask_region, icon_mask_region]) / 255.0
+            
+            # Resize target icon to match current icon size
+            resized_icon = cv2.resize(t["icon"], (icon_size, icon_size))
+            icon_src = resized_icon[0:icon_region.shape[0], 0:icon_region.shape[1]]
+            
+            if icon_src.shape == icon_region.shape:
+                icon_region[:] = (icon_src * icon_mask_3ch[0:icon_src.shape[0], 0:icon_src.shape[1]] + 
+                                icon_region * (1 - icon_mask_3ch[0:icon_src.shape[0], 0:icon_src.shape[1]])).astype(np.uint8)
         
-        x0 += 80
+        x0 += icon_spacing
     
-    # Add recording indicator AFTER writing frame (only shows in window)
+    # Add modern recording indicator (only shows in window)
     if is_recording:
-        cv2.circle(display, (FRAME_W - 30, 30), 10, (0, 0, 255), -1)
-        cv2.putText(display, "REC", (FRAME_W - 70, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        # Calculate responsive recording indicator dimensions
+        rec_width = int(FRAME_W * 0.117)
+        rec_height = int(top_panel_height * 0.583)
+        rec_x1 = FRAME_W - rec_width - int(FRAME_W * 0.023)
+        rec_y1 = int(top_panel_height * 0.25)
+        rec_x2 = FRAME_W - int(FRAME_W * 0.023)
+        rec_y2 = rec_y1 + rec_height
+        
+        # Animated pulse effect
+        base_pulse = int(FRAME_H * 0.025)
+        pulse_size = base_pulse + int(base_pulse * 0.25 * np.sin(time.time() * 3))
+        draw_rounded_rect(display, (rec_x1, rec_y1), (rec_x2, rec_y2), UI_BG_COLOR, -1, 8)
+        
+        circle_x = rec_x1 + int(rec_width * 0.27)
+        circle_y = (rec_y1 + rec_y2) // 2
+        cv2.circle(display, (circle_x, circle_y), pulse_size, UI_REC_COLOR, -1, cv2.LINE_AA)
+        
+        text_scale = max(0.4, min(0.7, FRAME_W / 1000))
+        text_x = circle_x + pulse_size + int(FRAME_W * 0.008)
+        draw_modern_text(display, "REC", (text_x, circle_y + int(FRAME_H * 0.008)), text_scale, UI_REC_COLOR, 2)
     
     cv2.imshow(WINDOW_NAME, display)
 
