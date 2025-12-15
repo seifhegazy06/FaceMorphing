@@ -72,28 +72,45 @@ def extract_landmarks(image_path, output_json="target_landmarks.json", visualize
 # -----------------------------
 
 if __name__ == "__main__":
-    # Specify the folder containing your images
-    image_folder = r"C:\Users\hp\OneDrive\Desktop\Anatomy tasks\Task 5\Targets"  # Change this to your folder path
+    # Specify the base folder containing subfolders with images
+    base_folder = r"C:\Users\hp\Desktop\Anatomy tasks\Task 5\Targets"  # Change this to your folder path
     
     # Check if folder exists
-    if not os.path.exists(image_folder):
-        print(f"❌ Folder '{image_folder}' not found!")
+    if not os.path.exists(base_folder):
+        print(f"❌ Folder '{base_folder}' not found!")
         print("Please create the folder or update the path.")
     else:
-        # Get all image files (jpg, jpeg, png)
-        image_extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']
-        image_files = [f for f in os.listdir(image_folder) 
-                      if os.path.splitext(f)[1] in image_extensions]
+        # Get all subdirectories in the base folder
+        subdirs = [d for d in os.listdir(base_folder) 
+                  if os.path.isdir(os.path.join(base_folder, d))]
         
-        if not image_files:
-            print(f"❌ No images found in '{image_folder}'")
+        if not subdirs:
+            print(f"❌ No subdirectories found in '{base_folder}'")
         else:
-            print(f"Found {len(image_files)} images. Processing...")
+            print(f"Found {len(subdirs)} subdirectories: {', '.join(subdirs)}")
             
-            for img_file in image_files:
-                img_path = os.path.join(image_folder, img_file)
+            total_processed = 0
+            image_extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']
+            
+            # Process each subdirectory
+            for subdir in subdirs:
+                subdir_path = os.path.join(base_folder, subdir)
+                print(f"\n📁 Processing folder: {subdir}")
                 
-                print(f"\n📸 Processing: {img_file}")
-                extract_landmarks(img_path, visualize=False)
+                # Get all image files in this subdirectory
+                image_files = [f for f in os.listdir(subdir_path) 
+                              if os.path.splitext(f)[1] in image_extensions]
+                
+                if not image_files:
+                    print(f"  ⚠️ No images found in '{subdir}'")
+                    continue
+                
+                print(f"  Found {len(image_files)} images in {subdir}")
+                
+                for img_file in image_files:
+                    img_path = os.path.join(subdir_path, img_file)
+                    print(f"  📸 Processing: {img_file}")
+                    extract_landmarks(img_path, visualize=False)
+                    total_processed += 1
             
-            print("\n✅ All images processed!")
+            print(f"\n✅ All done! Processed {total_processed} images from {len(subdirs)} folders.")

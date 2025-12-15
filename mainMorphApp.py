@@ -96,12 +96,14 @@ def warp_triangle(img_src, img_dst, t_src, t_dst):
 # ============================================================
 #         LOAD ALL TARGET IMAGES + JSON INTO LIST
 # ============================================================
-target_files = sorted(glob.glob(os.path.join(TARGET_FOLDER, "*.png")))
+# Search for PNG files in TARGET_FOLDER and all subdirectories
+target_files = sorted(glob.glob(os.path.join(TARGET_FOLDER, "**", "*.png"), recursive=True))
 targets = []
 
 for f in target_files:
     name = os.path.splitext(os.path.basename(f))[0]
-    json_path = os.path.join(TARGET_FOLDER, name + ".json")
+    # JSON should be in the same directory as the image
+    json_path = os.path.join(os.path.dirname(f), name + ".json")
 
     if not os.path.exists(json_path):
         print(f"WARNING: JSON for {name} not found!")
