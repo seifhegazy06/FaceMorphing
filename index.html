@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Real-time Face Morph</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
+      color: #fff;
+      padding: 20px;
+      margin: 0;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      text-align: center;
+      color: #64b5f6;
+      margin-bottom: 30px;
+    }
+    .controls {
+      background: rgba(30, 30, 40, 0.9);
+      padding: 20px;
+      border-radius: 15px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    }
+    .control-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      color: #64b5f6;
+      font-weight: bold;
+    }
+    select, input[type="range"] {
+      width: 100%;
+      padding: 8px;
+      background: #2a2a3e;
+      color: #fff;
+      border: 2px solid #64b5f6;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .slider-value {
+      color: #ffb74d;
+      font-weight: bold;
+      margin-left: 10px;
+    }
+    .video-container {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .video-box {
+      background: rgba(30, 30, 40, 0.9);
+      padding: 15px;
+      border-radius: 15px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    }
+    video, canvas {
+      display: block;
+      border-radius: 10px;
+      max-width: 100%;
+      height: auto;
+    }
+    button {
+      background: #64b5f6;
+      color: #1e1e2e;
+      border: none;
+      padding: 12px 30px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: bold;
+      margin: 5px;
+      transition: all 0.3s;
+    }
+    button:hover {
+      background: #42a5f5;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 10px rgba(100, 181, 246, 0.5);
+    }
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .status {
+      text-align: center;
+      margin: 10px 0;
+      padding: 10px;
+      background: rgba(255, 183, 77, 0.2);
+      border-radius: 8px;
+      color: #ffb74d;
+    }
+    h3 {
+      text-align: center;
+      margin-bottom: 10px;
+      color: #64b5f6;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>🎭 Real-time Face Morphing</h1>
+  
+  <div class="controls">
+    <div class="control-group">
+      <label>Select Camera:</label>
+      <select id="cameraSelect" onchange="switchCamera()">
+        <option value="">Loading cameras...</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Select Morph Target:</label>
+      <select id="targetSelect" onchange="changeTarget()">
+        <option value="">None (Original)</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>
+        Blend Strength: <span class="slider-value" id="alphaValue">50%</span>
+      </label>
+      <input type="range" id="alphaSlider" min="0" max="100" value="50" oninput="changeAlpha()">
+    </div>
+    
+    <div style="text-align: center;">
+      <button onclick="startVideo()" id="startBtn">🎥 Start Webcam</button>
+      <button onclick="stopVideo()" id="stopBtn" disabled>⏹️ Stop</button>
+    </div>
+    
+    <div class="status" id="status">Ready to start</div>
+  </div>
+  
+  <div class="video-container">
+    <div class="video-box">
+      <h3 id="canvasTitle">Camera</h3>
+      <canvas id="canvas" width="640" height="480"></canvas>
+    </div>
+  </div>
+  
+  <!-- Hidden video element for camera capture -->
+  <video id="video" width="640" height="480" autoplay playsinline style="display: none;"></video>
+</div>
+
+<script>
+// Use HTTPS for server connection
+const SERVER_URL = "https://192.168.137.92:8000";
+let video = document.getElementById("video");
+let canvas = document.getElementById("canvas");
+let ctx = canvas.getContext("2d");
+let isStreaming = false;
+let streamInterval = null;
+let availableCameras = [];
+let currentCameraId = null;
+
+// Load available cameras
+async function loadCameras() {
+  // Check if mediaDevices is supported
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    console.error("Camera API not supported");
+    const select = document.getElementById("cameraSelect");
+    select.innerHTML = '<option value="">Camera not supported</option>';
+    document.getElementById("status").textContent = "⚠️ Camera requires HTTPS. Try: https://192.168.137.92:8000";
+    return;
+  }
+  
+  try {
+    // Request permission first to get camera labels
+    let permissionGranted = false;
+    try {
+      const testStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      testStream.getTracks().forEach(track => track.stop());
+      permissionGranted = true;
+    } catch (permErr) {
+      console.log("Camera permission not granted yet");
+    }
+    
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    availableCameras = devices.filter(device => device.kind === 'videoinput');
+    
+    const select = document.getElementById("cameraSelect");
+    select.innerHTML = "";
+    
+    if (availableCameras.length === 0) {
+      select.innerHTML = '<option value="">No cameras found</option>';
+      return;
+    }
+    
+    // Add options for front and back cameras (mobile-friendly)
+    const option1 = document.createElement("option");
+    option1.value = "user";
+    option1.text = "Front Camera (Selfie)";
+    select.appendChild(option1);
+    
+    const option2 = document.createElement("option");
+    option2.value = "environment";
+    option2.text = "Back Camera";
+    select.appendChild(option2);
+    
+    // Add specific camera devices if labels are available
+    availableCameras.forEach((camera, index) => {
+      if (camera.label) {
+        const option = document.createElement("option");
+        option.value = camera.deviceId;
+        option.text = camera.label;
+        select.appendChild(option);
+      }
+    });
+    
+    // Set default to front camera
+    currentCameraId = "user";
+    
+    console.log(`Found ${availableCameras.length} camera(s)`);
+  } catch (err) {
+    console.error("Error loading cameras:", err);
+    // Add default options even if enumeration fails
+    const select = document.getElementById("cameraSelect");
+    select.innerHTML = '<option value="user">Front Camera</option><option value="environment">Back Camera</option>';
+    currentCameraId = "user";
+  }
+}
+
+async function switchCamera() {
+  const select = document.getElementById("cameraSelect");
+  currentCameraId = select.value;
+  
+  // If streaming, restart with new camera
+  if (isStreaming) {
+    stopVideo();
+    setTimeout(() => startVideo(), 500);
+  }
+}
+
+// Load available targets on page load
+async function loadTargets() {
+  try {
+    const response = await fetch(`${SERVER_URL}/targets`, {
+      mode: 'cors',
+      credentials: 'omit'
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    const select = document.getElementById("targetSelect");
+    select.innerHTML = '<option value="">None (Original)</option>';
+    
+    if (data.targets && data.targets.length > 0) {
+      data.targets.forEach(target => {
+        const option = document.createElement("option");
+        option.value = target;
+        option.text = target;
+        select.appendChild(option);
+      });
+      document.getElementById("status").textContent = `Loaded ${data.targets.length} targets. Select one to morph!`;
+    } else {
+      document.getElementById("status").textContent = "No targets available";
+    }
+  } catch (err) {
+    document.getElementById("status").textContent = `Error: ${err.message}. Check console for details.`;
+    console.error("Error loading targets:", err);
+    const select = document.getElementById("targetSelect");
+    select.innerHTML = '<option value="">Failed to load targets</option>';
+  }
+}
+
+async function changeTarget() {
+  const target = document.getElementById("targetSelect").value;
+  
+  // Update canvas title
+  const canvasTitle = document.getElementById("canvasTitle");
+  if (target) {
+    canvasTitle.textContent = `Morphed: ${target}`;
+  } else {
+    canvasTitle.textContent = "Camera";
+  }
+  
+  if (!target) {
+    document.getElementById("status").textContent = "No morph - showing original camera";
+    return;
+  }
+  
+  try {
+    await fetch(`${SERVER_URL}/set-target`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target })
+    });
+    document.getElementById("status").textContent = `Morphing to: ${target}`;
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function changeAlpha() {
+  const alpha = document.getElementById("alphaSlider").value;
+  document.getElementById("alphaValue").textContent = `${alpha}%`;
+  
+  try {
+    await fetch(`${SERVER_URL}/set-blend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alpha: parseInt(alpha) })
+    });
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function startVideo() {
+  // Check if mediaDevices is supported
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    document.getElementById("status").textContent = "⚠️ Camera not supported. Use HTTPS or check browser permissions.";
+    alert("Camera access requires HTTPS on mobile devices.\n\nThis server is running on HTTP. Please either:\n1. Access from desktop browser\n2. Use HTTPS (requires SSL certificate)\n3. Use Chrome's 'Inspect' feature with USB debugging");
+    return;
+  }
+  
+  try {
+    // Build video constraints
+    const constraints = {
+      video: {
+        width: { ideal: 640 },
+        height: { ideal: 480 }
+      }
+    };
+    
+    // Handle camera selection
+    if (currentCameraId === "user" || currentCameraId === "environment") {
+      // Use facingMode for mobile cameras
+      constraints.video.facingMode = currentCameraId;
+    } else if (currentCameraId) {
+      // Use specific device ID
+      constraints.video.deviceId = { exact: currentCameraId };
+    } else {
+      // Default to front camera
+      constraints.video.facingMode = "user";
+    }
+    
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+    isStreaming = true;
+    
+    // Reload cameras to get full labels now that permission is granted
+    await loadCameras();
+    
+    document.getElementById("startBtn").disabled = true;
+    document.getElementById("stopBtn").disabled = false;
+    document.getElementById("status").textContent = "Streaming...";
+    
+    // Start sending frames to server (1 FPS for smooth performance)
+    streamInterval = setInterval(sendFrame, 1000); // 1 FPS
+  } catch (err) {
+    document.getElementById("status").textContent = "Error accessing camera: " + err.message;
+    console.error(err);
+  }
+}
+
+function stopVideo() {
+  isStreaming = false;
+  if (streamInterval) {
+    clearInterval(streamInterval);
+  }
+  
+  const stream = video.srcObject;
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+  }
+  video.srcObject = null;
+  
+  document.getElementById("startBtn").disabled = false;
+  document.getElementById("stopBtn").disabled = true;
+  document.getElementById("status").textContent = "Stopped";
+  
+  // Clear canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+let isProcessing = false; // Prevent overlapping requests
+
+async function sendFrame() {
+  if (!isStreaming || isProcessing) return;
+  
+  // Check if a target is selected
+  const target = document.getElementById("targetSelect").value;
+  
+  // If no target selected, just show the camera feed
+  if (!target) {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return;
+  }
+  
+  isProcessing = true;
+  
+  // Draw current video frame to a temporary canvas
+  const tempCanvas = document.createElement("canvas");
+  tempCanvas.width = video.videoWidth;
+  tempCanvas.height = video.videoHeight;
+  const tempCtx = tempCanvas.getContext("2d");
+  tempCtx.drawImage(video, 0, 0);
+  
+  // Convert to blob with lower quality for faster upload
+  tempCanvas.toBlob(async (blob) => {
+    const formData = new FormData();
+    formData.append("file", blob, "frame.jpg");
+    
+    try {
+      const response = await fetch(`${SERVER_URL}/morph-realtime`, {
+        method: "POST",
+        body: formData
+      });
+      
+      const imageBlob = await response.blob();
+      const imageUrl = URL.createObjectURL(imageBlob);
+      
+      // Display morphed frame
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(imageUrl);
+      };
+      img.src = imageUrl;
+    } catch (err) {
+      console.error("Frame processing error:", err);
+    } finally {
+      isProcessing = false;
+    }
+  }, "image/jpeg", 0.25); // Lower quality for faster processing
+}
+
+// Initialize
+loadCameras();
+loadTargets();
+</script>
+
+</body>
+</html>

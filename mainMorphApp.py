@@ -12,6 +12,7 @@ import threading
 from moviepy import VideoFileClip, AudioFileClip
 import ctypes
 
+
 # ============================================================
 #                    CONFIGURATION
 # ============================================================
@@ -20,10 +21,9 @@ WINDOW_NAME = "Real-time Morph"
 
 # Get screen resolution and set default to 80% of screen size
 user32 = ctypes.windll.user32
-SCREEN_WIDTH = user32.GetSystemMetrics(0)
-SCREEN_HEIGHT = user32.GetSystemMetrics(1)
-DEFAULT_WIDTH = int(SCREEN_WIDTH)
-DEFAULT_HEIGHT = int(SCREEN_HEIGHT)
+
+DEFAULT_WIDTH = 800
+DEFAULT_HEIGHT = 600
 
 mp_face_mesh = mp.solutions.face_mesh
 
@@ -215,16 +215,24 @@ triangles = tri.simplices
 #                 OPEN WEBCAM + MESH
 # ============================================================
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FPS, 30)
 
-face_mesh = mp_face_mesh.FaceMesh(max_num_faces=5, refine_landmarks=False,
-                                  min_detection_confidence=0.5,
-                                  min_tracking_confidence=0.5)
+# Fix dark camera image
+cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)  # Enable auto-exposure
+cap.set(cv2.CAP_PROP_BRIGHTNESS, 0.5)  # Adjust brightness (0-1)
+cap.set(cv2.CAP_PROP_CONTRAST, 0.5)  # Adjust contrast
+cap.set(cv2.CAP_PROP_GAIN, 0)  # Auto gain
 
-# Create resizable window in fullscreen mode
+# PERFORMANCE: Reduce to 1 face and lower confidence for faster processing
+face_mesh = mp_face_mesh.FaceMesh(max_num_faces=2, refine_landmarks=False,
+                                  min_detection_confidence=0.3,
+                                  min_tracking_confidence=0.3)
+
+# Create resizable window with default size
 cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+cv2.resizeWindow(WINDOW_NAME, DEFAULT_WIDTH, DEFAULT_HEIGHT)
 
 
 # ============================================================
@@ -393,9 +401,15 @@ while True:
     FRAME_W = window_rect[2] if window_rect[2] > 0 else DEFAULT_WIDTH
     FRAME_H = window_rect[3] if window_rect[3] > 0 else DEFAULT_HEIGHT
 
-    frame = cv2.resize(frame, (FRAME_W, FRAME_H))
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    # PERFORMANCE: Process at lower resolution for face detection
+    PROCESS_W = 320
+    PROCESS_H = 240
+    frame_small = cv2.resize(frame, (PROCESS_W, PROCESS_H))
+    rgb = cv2.cvtColor(frame_small, cv2.COLOR_BGR2RGB)
     results = face_mesh.process(rgb)
+    
+    # Resize frame to display size
+    frame = cv2.resize(frame, (FRAME_W, FRAME_H))
 
     display = frame.copy()
 
@@ -403,6 +417,9 @@ while True:
         # Process each detected face
         for face_lms in results.multi_face_landmarks:
 
+            # PERFORMANCE: Scale landmarks from processed resolution to display resolution
+            scale_x = FRAME_W / PROCESS_W
+            scale_y = FRAME_H / PROCESS_H
             src_pts = []
             for lm in face_lms.landmark:
                 src_pts.append([int(lm.x * FRAME_W), int(lm.y * FRAME_H)])
@@ -448,7 +465,7 @@ while True:
                 teeth_mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
                 cv2.fillConvexPoly(teeth_mask, cv2.convexHull(teeth_pts), 255)
                 
-                # Expand teeth mask to ensure full teeth coverage
+                # PERFORMANCE: Expand teeth mask to ensure full teeth coverage
                 kernel = np.ones((3,3), np.uint8)
                 teeth_mask = cv2.dilate(teeth_mask, kernel, iterations=1)
                 
@@ -470,15 +487,15 @@ while True:
                 # Combine eye masks
                 eyes_mask = cv2.bitwise_or(left_eye_mask, right_eye_mask)
                 
-                # Expand eyes mask to ensure full coverage
-                kernel = np.ones((5,5), np.uint8)
-                eyes_mask = cv2.dilate(eyes_mask, kernel, iterations=2)
+                # PERFORMANCE: Expand eyes mask to ensure full coverage (reduced iterations)
+                kernel = np.ones((3,3), np.uint8)
+                eyes_mask = cv2.dilate(eyes_mask, kernel, iterations=1)
                 
                 # Remove eyes area from face mask (so real eyes always show)
                 face_mask = cv2.subtract(face_mask, eyes_mask)
             
-            # Blur mask edges for smooth blending
-            face_mask = cv2.GaussianBlur(face_mask, (21, 21), 11)
+            # PERFORMANCE: Blur mask edges for smooth blending (reduced kernel size)
+            face_mask = cv2.GaussianBlur(face_mask, (7, 7), 5)
             face_mask_3ch = cv2.merge([face_mask, face_mask, face_mask]) / 255.0
             
             # Alpha blend
@@ -501,9 +518,9 @@ while True:
                 if len(src_pts) > max(teeth_indices):
                     cv2.fillConvexPoly(final_exclusion_mask, cv2.convexHull(teeth_pts), 255)
                 
-                # Expand to ensure full coverage
-                kernel = np.ones((5,5), np.uint8)
-                final_exclusion_mask = cv2.dilate(final_exclusion_mask, kernel, iterations=2)
+                # PERFORMANCE: Expand to ensure full coverage (reduced iterations)
+                kernel = np.ones((3,3), np.uint8)
+                final_exclusion_mask = cv2.dilate(final_exclusion_mask, kernel, iterations=1)
                 
                 # Convert to 3 channels
                 final_exclusion_mask_3ch = cv2.merge([final_exclusion_mask, final_exclusion_mask, final_exclusion_mask]) / 255.0
